@@ -1,0 +1,176 @@
+name: Build AccessOne APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Flash Mode.zip"
+      - "logo.png"
+      - ".github/workflows/main.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Extract website
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p website
+          unzip -o "Flash Mode.zip" -d website
+
+          INDEX_FILE="$(find website -type f -name index.html | head -n 1)"
+
+          if [ -z "$INDEX_FILE" ]; then
+            echo "ERROR: index.html not found in Flash Mode.zip"
+            exit 1
+          fi
+
+          WEBSITE_ROOT="$(dirname "$INDEX_FILE")"
+
+          mkdir -p www
+          cp -R "$WEBSITE_ROOT"/. www/
+
+          echo "Website files copied successfully."
+          ls -la www
+
+      - name: Create Capacitor project
+        shell: bash
+        run: |
+          set -e
+
+          npm init -y
+
+          npm install @capacitor/core@latest @capacitor/android@latest
+          npm install --save-dev @capacitor/cli@latest
+
+          npx cap init "AccessOne" "com.flashmode.app" --web-dir www
+          npx cap add android
+
+      - name: Set Existing Logo
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f "logo.png" ]; then
+            echo "ERROR: logo.png not found in repository root."
+            exit 1
+          fi
+
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          cp logo.png android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
+
+          echo "Existing logo copied without modification."
+
+      - name: Configure Android Back Button
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p android/app/src/main/java/com/flashmode/app
+
+          cat > android/app/src/main/java/com/flashmode/app/MainActivity.java <<'EOF'
+          package com.flashmode.app;
+
+          import android.webkit.WebView;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+
+              @Override
+              @SuppressWarnings("deprecation")
+              public void onBackPressed() {
+                  if (getBridge() == null
+                      || getBridge().getWebView() == null) {
+                      super.onBackPressed();
+                      return;
+                  }
+
+                  WebView webView = getBridge().getWebView();
+
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      finish();
+                  }
+              }
+          }
+          EOF
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Configure App Icon
+        shell: bash
+        run: |
+          set -e
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+
+          match = re.search(r'<application\b[^>]*>', text, re.DOTALL)
+          if not match:
+              raise SystemExit("ERROR: Android application tag not found.")
+
+          tag = match.group(0)
+
+          tag = re.sub(r'\s+android:icon="[^"]*"', '', tag)
+          tag = re.sub(r'\s+android:roundIcon="[^"]*"', '', tag)
+
+          tag = tag[:-1] + (
+              ' android:icon="@drawable/flash_mode_logo"'
+              '>'
+          )
+
+          text = text[:match.start()] + tag + text[match.end():]
+          manifest.write_text(text)
+
+          print("Manifest now references the existing logo.")
+          PY
+
+          test -f android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -e
+
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AccessOne-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
