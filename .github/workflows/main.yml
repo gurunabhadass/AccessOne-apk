@@ -14,7 +14,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,85 +37,53 @@ jobs:
       - name: Extract website
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           mkdir -p website
           unzip -o "Flash Mode.zip" -d website
-
           INDEX_FILE="$(find website -type f -name index.html | head -n 1)"
-
-          if [ -z "$INDEX_FILE" ]; then
-            echo "ERROR: index.html not found in Flash Mode.zip"
-            exit 1
-          fi
-
+          if [ -z "$INDEX_FILE" ]; then echo "ERROR: index.html not found in Flash Mode.zip"; exit 1; fi
           WEBSITE_ROOT="$(dirname "$INDEX_FILE")"
-
           mkdir -p www
           cp -R "$WEBSITE_ROOT"/. www/
-
-          echo "Website files copied successfully."
-          ls -la www
+          test -f www/android-src/FlashlightPlugin.java
+          test -f www/android-src/FlashlightService.java
+          echo "Web assets and native flashlight sources found."
 
       - name: Create Capacitor project
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           npm init -y
-
           npm install @capacitor/core@latest @capacitor/android@latest
           npm install --save-dev @capacitor/cli@latest
-
           npx cap init "AccessOne" "com.flashmode.app" --web-dir www
           npx cap add android
 
-      - name: Set Existing Logo
+      - name: Add native flashlight plugin and service
         shell: bash
         run: |
-          set -e
-
-          if [ ! -f "logo.png" ]; then
-            echo "ERROR: logo.png not found in repository root."
-            exit 1
-          fi
-
-          mkdir -p android/app/src/main/res/drawable-nodpi
-          cp logo.png android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
-
-          echo "Existing logo copied without modification."
-
-      - name: Configure Android Back Button
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p android/app/src/main/java/com/flashmode/app
-
-          cat > android/app/src/main/java/com/flashmode/app/MainActivity.java <<'EOF'
+          set -euo pipefail
+          JAVA_DIR="android/app/src/main/java/com/flashmode/app"
+          mkdir -p "$JAVA_DIR"
+          cp www/android-src/FlashlightPlugin.java "$JAVA_DIR/FlashlightPlugin.java"
+          cp www/android-src/FlashlightService.java "$JAVA_DIR/FlashlightService.java"
+          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
           package com.flashmode.app;
-
+          import android.os.Bundle;
           import android.webkit.WebView;
           import com.getcapacitor.BridgeActivity;
-
           public class MainActivity extends BridgeActivity {
-
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(FlashlightPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
               @Override
               @SuppressWarnings("deprecation")
               public void onBackPressed() {
-                  if (getBridge() == null
-                      || getBridge().getWebView() == null) {
-                      super.onBackPressed();
-                      return;
-                  }
-
+                  if (getBridge() == null || getBridge().getWebView() == null) { super.onBackPressed(); return; }
                   WebView webView = getBridge().getWebView();
-
-                  if (webView.canGoBack()) {
-                      webView.goBack();
-                  } else {
-                      finish();
-                  }
+                  if (webView.canGoBack()) webView.goBack(); else finish();
               }
           }
           EOF
@@ -124,45 +91,45 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Configure App Icon
+      - name: Configure Android permissions, service and icon
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           python3 - <<'PY'
           import re
           from pathlib import Path
-
-          manifest = Path("android/app/src/main/AndroidManifest.xml")
-          text = manifest.read_text()
-
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          text = p.read_text()
+          permissions = [
+              'android.permission.CAMERA',
+              'android.permission.FOREGROUND_SERVICE',
+              'android.permission.FOREGROUND_SERVICE_CAMERA',
+              'android.permission.POST_NOTIFICATIONS',
+          ]
+          for perm in permissions:
+              tag = f'<uses-permission android:name="{perm}" />'
+              if perm not in text:
+                  text = text.replace('<application', tag + '\n    <application', 1)
+          service = '<service android:name=".FlashlightService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="camera" />'
+          if 'android:name=".FlashlightService"' not in text:
+              text = text.replace('</application>', '        ' + service + '\n    </application>', 1)
           match = re.search(r'<application\b[^>]*>', text, re.DOTALL)
-          if not match:
-              raise SystemExit("ERROR: Android application tag not found.")
-
+          if not match: raise SystemExit('ERROR: application tag not found')
           tag = match.group(0)
-
           tag = re.sub(r'\s+android:icon="[^"]*"', '', tag)
           tag = re.sub(r'\s+android:roundIcon="[^"]*"', '', tag)
-
-          tag = tag[:-1] + (
-              ' android:icon="@drawable/flash_mode_logo"'
-              '>'
-          )
-
+          tag = tag[:-1] + ' android:icon="@drawable/flash_mode_logo">'
           text = text[:match.start()] + tag + text[match.end():]
-          manifest.write_text(text)
-
-          print("Manifest now references the existing logo.")
+          p.write_text(text)
           PY
-
-          test -f android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
+          test -f logo.png
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          cp logo.png android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
 
       - name: Build debug APK
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
