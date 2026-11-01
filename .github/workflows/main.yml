@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "Flash Mode.zip"
-      - "logo.png"
+      - "AccessOne.zip"
       - ".github/workflows/main.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,99 +32,94 @@ jobs:
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
-      - name: Extract website
+      - name: Extract AccessOne website
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p website
-          unzip -o "Flash Mode.zip" -d website
-          INDEX_FILE="$(find website -type f -name index.html | head -n 1)"
-          if [ -z "$INDEX_FILE" ]; then echo "ERROR: index.html not found in Flash Mode.zip"; exit 1; fi
-          WEBSITE_ROOT="$(dirname "$INDEX_FILE")"
-          mkdir -p www
-          cp -R "$WEBSITE_ROOT"/. www/
-          test -f www/android-src/FlashlightPlugin.java
-          test -f www/android-src/FlashlightService.java
-          echo "Web assets and native flashlight sources found."
 
-      - name: Create Capacitor project
+          if [ ! -f "AccessOne.zip" ]; then
+            echo "ERROR: AccessOne.zip was not found in the repository root."
+            echo "Upload the ZIP with the exact filename: AccessOne.zip"
+            exit 1
+          fi
+
+          mkdir -p extracted www
+          unzip -q "AccessOne.zip" -d extracted
+
+          INDEX_FILE="$(find extracted -type f -name index.html -print -quit)"
+          if [ -z "$INDEX_FILE" ]; then
+            echo "ERROR: index.html was not found inside AccessOne.zip."
+            exit 1
+          fi
+
+          WEBSITE_ROOT="$(dirname "$INDEX_FILE")"
+          cp -R "$WEBSITE_ROOT"/. www/
+
+          test -s www/index.html
+          test -s www/logo.png
+
+          # The supplied page registers service-worker.js, while the ZIP
+          # contains service.worker.js. Provide the expected filename too.
+          if [ -f "www/service.worker.js" ] && [ ! -f "www/service-worker.js" ]; then
+            cp "www/service.worker.js" "www/service-worker.js"
+          fi
+
+          echo "AccessOne web files extracted successfully."
+          find www -maxdepth 2 -type f -print | sort
+
+      - name: Create Capacitor Android project
         shell: bash
         run: |
           set -euo pipefail
           npm init -y
-          npm install @capacitor/core@latest @capacitor/android@latest
-          npm install --save-dev @capacitor/cli@latest
-          npx cap init "AccessOne" "com.flashmode.app" --web-dir www
+          npm install @capacitor/core@7 @capacitor/android@7
+          npm install --save-dev @capacitor/cli@7
+
+          npx cap init "AccessOne" "com.accessone.app" --web-dir=www
           npx cap add android
+          npx cap sync android
 
-      - name: Add native flashlight plugin and service
+      - name: Configure Android app permissions and launcher icon
         shell: bash
         run: |
           set -euo pipefail
-          JAVA_DIR="android/app/src/main/java/com/flashmode/app"
-          mkdir -p "$JAVA_DIR"
-          cp www/android-src/FlashlightPlugin.java "$JAVA_DIR/FlashlightPlugin.java"
-          cp www/android-src/FlashlightService.java "$JAVA_DIR/FlashlightService.java"
-          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
-          package com.flashmode.app;
-          import android.os.Bundle;
-          import android.webkit.WebView;
-          import com.getcapacitor.BridgeActivity;
-          public class MainActivity extends BridgeActivity {
-              @Override
-              public void onCreate(Bundle savedInstanceState) {
-                  registerPlugin(FlashlightPlugin.class);
-                  super.onCreate(savedInstanceState);
-              }
-              @Override
-              @SuppressWarnings("deprecation")
-              public void onBackPressed() {
-                  if (getBridge() == null || getBridge().getWebView() == null) { super.onBackPressed(); return; }
-                  WebView webView = getBridge().getWebView();
-                  if (webView.canGoBack()) webView.goBack(); else finish();
-              }
-          }
-          EOF
 
-      - name: Sync Capacitor
-        run: npx cap sync android
-
-      - name: Configure Android permissions, service and icon
-        shell: bash
-        run: |
-          set -euo pipefail
           python3 - <<'PY'
-          import re
           from pathlib import Path
-          p = Path('android/app/src/main/AndroidManifest.xml')
-          text = p.read_text()
+          import re
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text(encoding="utf-8")
+
           permissions = [
-              'android.permission.CAMERA',
-              'android.permission.FOREGROUND_SERVICE',
-              'android.permission.FOREGROUND_SERVICE_CAMERA',
-              'android.permission.POST_NOTIFICATIONS',
+              "android.permission.CAMERA",
+              "android.permission.INTERNET",
           ]
-          for perm in permissions:
-              tag = f'<uses-permission android:name="{perm}" />'
-              if perm not in text:
-                  text = text.replace('<application', tag + '\n    <application', 1)
-          service = '<service android:name=".FlashlightService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="camera" />'
-          if 'android:name=".FlashlightService"' not in text:
-              text = text.replace('</application>', '        ' + service + '\n    </application>', 1)
-          match = re.search(r'<application\b[^>]*>', text, re.DOTALL)
-          if not match: raise SystemExit('ERROR: application tag not found')
-          tag = match.group(0)
-          tag = re.sub(r'\s+android:icon="[^"]*"', '', tag)
-          tag = re.sub(r'\s+android:roundIcon="[^"]*"', '', tag)
-          tag = tag[:-1] + ' android:icon="@drawable/flash_mode_logo">'
-          text = text[:match.start()] + tag + text[match.end():]
-          p.write_text(text)
+          for permission in permissions:
+              tag = f'<uses-permission android:name="{permission}" />'
+              if permission not in text:
+                  text = text.replace("<application", tag + "\n    <application", 1)
+
+          # Camera hardware is optional so the app can still open on devices
+          # where camera access is unavailable.
+          feature = '<uses-feature android:name="android.hardware.camera" android:required="false" />'
+          if "android.hardware.camera" not in text:
+              text = text.replace("<application", feature + "\n    <application", 1)
+
+          text = re.sub(
+              r'android:icon="@[^"]+"',
+              'android:icon="@drawable/accessone_icon"',
+              text,
+              count=1
+          )
+
+          manifest.write_text(text, encoding="utf-8")
           PY
-          test -f logo.png
+
           mkdir -p android/app/src/main/res/drawable-nodpi
-          cp logo.png android/app/src/main/res/drawable-nodpi/flash_mode_logo.png
+          cp www/logo.png android/app/src/main/res/drawable-nodpi/accessone_icon.png
 
       - name: Build debug APK
         shell: bash
@@ -132,12 +127,28 @@ jobs:
           set -euo pipefail
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleDebug
 
-      - name: Upload APK
+          mkdir -p ../release-apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-apk/AccessOne.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: AccessOne-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: release-apk/AccessOne.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
+      - name: Publish latest APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: accessone-latest
+          name: AccessOne Latest Build
+          body: |
+            Automatically generated AccessOne Android APK.
+            This is a debug build for installation and testing.
+          files: release-apk/AccessOne.apk
+          overwrite_files: true
+          make_latest: true
+          
