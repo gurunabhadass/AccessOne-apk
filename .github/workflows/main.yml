@@ -93,9 +93,14 @@ jobs:
           app_tag = app_match.group(0)
           app_tag = re.sub(r'\s+android:icon="[^"]*"', '', app_tag)
           app_tag = re.sub(r'\s+android:roundIcon="[^"]*"', '', app_tag)
+          app_tag = re.sub(r'\s+android:label="[^"]*"', '', app_tag)
           app_tag = app_tag[:-1] + ' android:label="AccessOne" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round">'
           text = text[:app_match.start()] + app_tag + text[app_match.end():]
           manifest.write_text(text, encoding="utf-8")
+
+          import xml.etree.ElementTree as ET
+          ET.parse(manifest)
+          print("AndroidManifest.xml is valid.")
 
           # Use only the user's own logo.png. No generated or Android default logo.
           source = Image.open("www/logo.png").convert("RGBA")
@@ -111,31 +116,6 @@ jobs:
               icon.save(folder / "ic_launcher.png")
               icon.save(folder / "ic_launcher_round.png")
 
-          # Adaptive icon foreground also uses the exact supplied image.
-          fg = res / "drawable-nodpi"
-          fg.mkdir(parents=True, exist_ok=True)
-          source.save(fg / "accessone_launcher_foreground.png")
-
-          adaptive = res / "mipmap-anydpi-v26"
-          adaptive.mkdir(parents=True, exist_ok=True)
-          for name in ("ic_launcher", "ic_launcher_round"):
-              (adaptive / f"{name}.xml").write_text(
-                  '<?xml version="1.0" encoding="utf-8"?>\n'
-                  '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
-                  '  <background android:drawable="@color/accessone_icon_background"/>\n'
-                  '  <foreground android:drawable="@drawable/accessone_launcher_foreground"/>\n'
-                  '</adaptive-icon>\n',
-                  encoding="utf-8"
-              )
-
-          colors = res / "values"
-          colors.mkdir(parents=True, exist_ok=True)
-          color_file = colors / "accessone_colors.xml"
-          color_file.write_text(
-              '<?xml version="1.0" encoding="utf-8"?>\n'
-              '<resources><color name="accessone_icon_background">#081322</color></resources>\n',
-              encoding="utf-8"
-          )
           PY
 
       - name: Add Android Back handling bridge
@@ -191,7 +171,7 @@ jobs:
           set -euo pipefail
           cd android
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon assembleDebug --stacktrace
           mkdir -p ../release-apk
           cp app/build/outputs/apk/debug/app-debug.apk ../release-apk/AccessOne.apk
 
